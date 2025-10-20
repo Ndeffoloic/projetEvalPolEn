@@ -125,7 +125,7 @@ final_data <- panel_data %>%
   mutate(
     Lib = ifelse(time >= Lib_year, 1, 0),
     RESe = RESe / 100,             # en proportion
-    ECG = NA                       # à compléter si données disponibles
+    ECG = NA                       # je vais compléter ça plus tard, attention 
   )
 
 # =============================================================================
