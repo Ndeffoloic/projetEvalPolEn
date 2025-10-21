@@ -16,7 +16,8 @@ for(pkg in required_packages) {
 }
 
 options(stringsAsFactors = FALSE)
-set.seed(12345)
+set.seed(12345) # Loïc, Loïc + Quentin, Loïc + Quentin + Yohan, 
+#Loïc + Quentin + Yohan + Maxime, Loïc + Quentin + Yohan + Maxime + Aurelien  
 
 # =============================================================================
 # 1. FONCTIONS DE TÉLÉCHARGEMENT ET DE PRÉPARATION
@@ -80,8 +81,13 @@ eu_countries <- c("BE","CZ","DK","DE","EE","IE","GR","ES","FR","IT",
 
 message("Début du téléchargement des données Eurostat...")
 
-ep_raw   <- safe_get("nrg_pc_204")   # Prix électricité ménages
-gasp_raw <- safe_get("nrg_pc_202")   # Prix gaz ménages
+## Pour vérifier si les noms des datasets ont été modifiés dans Eurostat :  
+search_eurostat("electricity price household")
+search_eurostat("gas price household")
+
+
+ep_raw   <- safe_get("nrg_pc_204_h")   # Prix électricité ménages
+gasp_raw <- safe_get("nrg_pc_202_h")   # Prix gaz ménages
 rese_raw <- safe_get("nrg_ind_ren")  # Part énergies renouvelables
 gdp_raw  <- safe_get("nama_10_pc")   # PIB par habitant
 ech_raw  <- safe_get("nrg_bal_c")    # Consommation d’électricité
