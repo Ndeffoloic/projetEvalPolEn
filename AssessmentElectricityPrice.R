@@ -4,199 +4,237 @@
 # System-GMM Panel Data Replication — Enhanced & Verified Version
 # =============================================================================
 
-# --- Installation et chargement des packages nécessaires ---------------------
+# =============================================================================
+# 0. PRÉAMBULE — Chargement des packages
+# =============================================================================
 required_packages <- c("eurostat", "dplyr", "plm", "tidyr", "readr", "countrycode",
                        "mice", "stargazer", "ggplot2", "sandwich", "lmtest", "purrr")
-library(readr)
 for(pkg in required_packages) {
   if(!require(pkg, character.only = TRUE)) {
     install.packages(pkg)
     library(pkg, character.only = TRUE)
   }
 }
-
 options(stringsAsFactors = FALSE)
-set.seed(12345) # Loïc, Loïc + Quentin, Loïc + Quentin + Yohan, 
-#Loïc + Quentin + Yohan + Maxime, Loïc + Quentin + Yohan + Maxime + Aurelien  
+set.seed(12345)
 
 # =============================================================================
-# 1. FONCTIONS DE TÉLÉCHARGEMENT ET DE PRÉPARATION
+# 1. PARAMÈTRES GÉNÉRAUX
 # =============================================================================
-
-# Gestion robuste du téléchargement depuis Eurostat
-safe_get_raw <- function(code, filters = NULL){
-  tryCatch({
-    message("-> get_eurostat: ", code)
-    df <- get_eurostat(code, filters = filters, time_format = "date")
-    if(is.null(df) || nrow(df) == 0){
-      message("   (vide) ", code)
-      return(NULL)
-    }
-    message("   OK (", nrow(df), " lignes) : ", code)
-    return(df)
-  }, error = function(e){
-    message("   Erreur get_eurostat pour ", code, " : ", e$message)
-    return(NULL)
-  })
-}
-
-# Essayons une liste d'identifiants et renvoie le premier non-null (avec filtres si fournis)
-try_codes <- function(codes, filters = NULL){
-  for(code in codes){
-    df <- safe_get_raw(code, filters = filters)
-    if(!is.null(df)) return(list(code = code, df = df))
-  }
-  return(NULL)
-}
-
-# Préparation uniforme des données Eurostat
-prepare_eurostat_data <- function(df, valname) {
-  if (is.null(df)) return(NULL)
-  
-  # Détection du nom correct de la colonne temporelle
-  time_col <- intersect(names(df), c("time", "TIME_PERIOD", "date"))[1]
-  if (is.na(time_col)) stop("Colonne temporelle non trouvée dans le jeu de données.")
-  
-  # Détection du nom de la colonne de valeur
-  value_col <- intersect(names(df), c("values", "value"))[1]
-  if (is.na(value_col)) stop("Colonne de valeurs non trouvée.")
-  
-  # Transformation standardisée
-  df %>%
-    rename(value = all_of(value_col),
-           time = all_of(time_col)) %>%
-    select(geo, time, value) %>%
-    mutate(
-      geo = as.character(geo),
-      time = as.integer(format(as.Date(as.character(time)), "%Y"))
-    ) %>%
-    rename(!!valname := value)
-}
-
-
-# =============================================================================
-# 2. TÉLÉCHARGEMENT AUTOMATIQUE DES SÉRIES EUROSTAT
-# =============================================================================
-
-# ---------- candidates lists. @Quentin, tu pourras l'étendre si nécessaire ----------
-candidates <- list(
-  Ep = c("nrg_pc_204_h", "nrg_pc_204", "nrg_pc_204_c", "nrg_pc_204_a"),
-  GASp = c("nrg_pc_202_h", "nrg_pc_202", "nrg_pc_202_c"),
-  RESe = c("nrg_ind_ren","nrg_ind_ren_a"),
-  GDPpc = c("nama_10_pc","nama_10_pc_a"),
-  # pour la conso élec (souvent lourde) on va chercher plusieurs identifiants possibles
-  ECH = c("nrg_bal_c", "nrg_bal", "nrg_101a", "nrg_ind_consumption"),
-  # GES: candidates basiques
-  GGE = c("env_air_gge", "env_air_gge_a", "env_air_pollutant")
-)
-
-# filtres par dataset (liste nom->filters)
-filters_map <- list(
-  Ep = list(tax = "TOTAL", currency = "EUR", unit = "KWH"),
-  GASp = list(tax = "TOTAL", currency = "EUR", unit = "KWH"),
-  GDPpc = list(unit = "CP_EUR_HAB"),
-  # pour ECH et GGE on commence sans filtres (puis on filtrera localement)
-  ECH = NULL,
-  GGE = NULL,
-  RESe = NULL
-)
-
 eu_countries <- c("BE","CZ","DK","DE","EE","IE","GR","ES","FR","IT",
                   "CY","LV","LT","HU","MT","PL","PT","RO","SI","SK",
                   "FI","SE","UK")
-year_min <- 2000; year_max <- 2014
+year_min <- 2000; year_max <- 2015
 
-message("Début du téléchargement des données Eurostat...")
+# =============================================================================
+# 2. IMPORTATION / TÉLÉCHARGEMENT DES DONNÉES
+# =============================================================================
 
-results <- list()
-for(var in names(candidates)){
-  message("\n=== Recherche pour : ", var, " ===")
-  filt <- filters_map[[var]]
-  res <- try_codes(candidates[[var]], filters = filt)
-  if(is.null(res)){
-    message("Aucun identifiant trouvé automatiquement pour ", var, ". On tente une recherche textuelle (search_eurostat)...")
-    # lister les 10 premières correspondances
-    hits <- search_eurostat(var)
-    if(length(hits)>0){
-      print(head(hits, 10))
-    } else {
-      message("Aucune correspondance trouvée par search_eurostat pour: ", var)
-    }
-    # signale à l'utilisateur qu'il doit fournir un CSV local
-    message("=> ACTION REQUISE : si l'API ne renvoie rien, fournissez un fichier CSV local nommé '", var, ".csv' dans le répertoire de travail.")
-    # tenter lecture CSV si existant
-    if(file.exists(paste0(var, ".csv"))){
-      message("Lecture du fichier local ", var, ".csv")
-      results[[var]] <- read_csv(paste0(var, ".csv"))
-    } else {
-      results[[var]] <- NULL
-    }
+safe_get_raw <- function(code, filters=NULL){
+  tryCatch({
+    df <- get_eurostat(code, filters=filters, time_format="date")
+    if(is.null(df) || nrow(df)==0) return(NULL)
+    df
+  }, error=function(e) NULL)
+}
+
+prepare_eurostat_data <- function(df, valname){
+  if(is.null(df)) return(NULL)
+  time_col <- intersect(names(df), c("time", "TIME_PERIOD", "date"))[1]
+  value_col <- intersect(names(df), c("values", "value", "OBS_VALUE"))[1]
+  df %>%
+    rename(value = !!value_col, time = !!time_col) %>%
+    select(geo, time, value) %>%
+    mutate(time = as.integer(format(as.Date(as.character(time)), "%Y"))) %>%
+    rename(!!valname := value)
+}
+
+# --- Lecture intelligente (local CSV ou API) ---
+load_or_download <- function(name, code, filters=NULL){
+  file <- paste0(name, ".csv")
+  if(file.exists(file)){
+    message("Lecture locale : ", file)
+    df <- read_csv(file, show_col_types = FALSE)
+    df <- df %>%
+      mutate(geo = ifelse("geo" %in% names(df), geo, STRUCTURE_ID),
+             time = ifelse("time" %in% names(df), time, as.integer(substr(`Time`,1,4))),
+             value = ifelse("values" %in% names(df), values, OBS_VALUE)) %>%
+      select(geo, time, value)
+    return(df)
   } else {
-    # préparer le tableau
-    df_prep <- prepare_eurostat_data(res$df, var)
-    if(!is.null(df_prep)){
-      # réduire vite à l'intervalle et aux pays avant de mettre en mémoire
-      df_prep <- df_prep %>% filter(geo %in% eu_countries, time >= year_min, time <= year_max)
-      results[[var]] <- df_prep
-      rm(res); gc()
-    } else {
-      message("Préparation échouée pour ", res$code, " — stockage en NULL")
-      results[[var]] <- NULL
-    }
+    message("Téléchargement depuis Eurostat : ", code)
+    df <- safe_get_raw(code, filters)
+    return(df)
   }
 }
 
+Ep_raw   <- load_or_download("Ep",   "nrg_pc_204_h")
+GASp_raw <- load_or_download("GASp", "nrg_pc_202_h")
+RESe_raw <- safe_get_raw("nrg_ind_ren")
+GDPpc_raw <- safe_get_raw("nama_10_pc")
+ECH_raw  <- safe_get_raw("nrg_bal_c")
+GGE_raw  <- load_or_download("GGE",  "env_air_gge_h") #J'ai volontairement modifié 
+#l'indice du dataset des GGE car il est complètement lourd lorsque téléchargé. 
+
 # =============================================================================
-# 3. FUSION, NETTOYAGE DES DONNÉES ET AFFICHAGE DES RESULTATS
+# 3. PRÉPARATION ET AGRÉGATION
 # =============================================================================
 
-sapply(results, function(x) if(is.null(x)) NA_integer_ else nrow(x))
-
-mandatory <- c("Ep","GASp","RESe","GDPpc")
-missing_mandatory <- setdiff(mandatory, names(Filter(Negate(is.null), results)))
-if(length(missing_mandatory) < length(mandatory)){
-  message("⚠️ Certains jeux obligatoires manquent : ", paste(setdiff(mandatory, names(Filter(Negate(is.null), results))), collapse = ", "))
-  message("Si un jeu manque, vous devez fournir un CSV local nommé Var.csv (par ex. Ep.csv) ou obtenir le dataset via le site Eurostat/Comext.")
+aggregate_large <- function(df, varname){
+  df %>%
+    filter(geo %in% eu_countries) %>%
+    mutate(year = as.integer(format(as.Date(as.character(time)), "%Y"))) %>%
+    group_by(geo, year) %>%
+    summarise(value = mean(values, na.rm=TRUE)) %>%
+    rename(time = year, !!varname := value)
 }
 
-to_merge <- Filter(Negate(is.null), results)
-if(length(to_merge) == 0) stop("Aucun jeu disponible pour fusionner. Fournir des CSV locaux.")
+ep   <- prepare_eurostat_data(Ep_raw, "Ep")
+gasp <- prepare_eurostat_data(GASp_raw, "GASp")
+rese <- prepare_eurostat_data(RESe_raw, "RESe")
+gdp  <- prepare_eurostat_data(GDPpc_raw, "GDPpc")
+gge  <- prepare_eurostat_data(GGE_raw, "GGEpc")
 
-merged <- NULL
-for(name in names(to_merge)){
-  if(is.null(merged)){
-    merged <- to_merge[[name]]
-  } else {
-    merged <- full_join(merged, to_merge[[name]], by = c("geo","time"))
-  }
-  gc()
-  message("Merged progressive: ", name, " -> rows:", nrow(merged))
+# --- agrégation spéciale pour ECH ---
+if(!is.null(ECH_raw)){
+  ECH_small <- ECH_raw %>%
+    filter(nrg_bal == "FC_OTH_HH", siec == "E7000", unit == "KTOE") %>%
+    group_by(geo, TIME_PERIOD) %>%
+    summarise(ECHpc = mean(values, na.rm=TRUE), .groups="drop")
+} else {
+  ECH_small <- NULL
 }
 
-###final_data <- merged %>% arrange(geo, time)
+# Fusion allégée
+dfs <- list(ep, gasp, rese, gdp, ECH_small, gge)
+panel_data <- dfs %>%
+  purrr::compact() %>%
+  purrr::reduce(full_join, by=c("geo","time")) %>%
+  filter(geo %in% eu_countries, time >= year_min, time <= year_max)
 
-final_data <- merged %>% arrange(geo, time)
+# =============================================================================
+# 4. VARIABLES DE POLITIQUE
+# =============================================================================
 
-# If ECH or GGE are present but huge, allow manual extra-filtering:
-# Now transformations and GMM setup (example minimal)
+policy_data <- data.frame(
+  geo = eu_countries,
+  Lib_year = c(2007, 2006, 2003, 1998, 2009, 2005, 2007, 2003, 2007, 2007,
+               2010, 2007, 2007, 2007, 2010, 2007, 2007, 2007, 2007, 2007,
+               1997, 1996, 1990),
+  Reg10 = c(0,0,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,0,0,0)
+)
+
+final_data <- panel_data %>%
+  left_join(policy_data, by = "geo") %>%
+  mutate(
+    Lib = ifelse(time >= Lib_year, 1, 0),
+    RESe = RESe / 100
+  )
+
+# =============================================================================
+# 5. TRANSFORMATIONS ET IMPUTATION MULTIPLE
+# =============================================================================
 final_data <- final_data %>%
-  left_join(data.frame(geo = eu_countries, Lib_year = rep(2007, length(eu_countries))), by = "geo") %>%
-  mutate(Lib = ifelse(time >= Lib_year, 1, 0),
-         RESe = ifelse(!is.na(RESe), RESe/100, NA),
-         Lep = ifelse(!is.na(Ep) & Ep>0, log(Ep), NA),
-         L_GDPpc = ifelse(!is.na(GDPpc) & GDPpc>0, log(GDPpc), NA))
+  mutate(
+    Lep = ifelse(Ep > 0, log(Ep), NA),
+    L_GDPpc = ifelse(GDPpc > 0, log(GDPpc), NA),
+    L_ECHpc = ifelse(ECHpc > 0, log(ECHpc), NA),
+    L_GASp = ifelse(GASp > 0, log(GASp), NA),
+    L_GGEpc = ifelse(GGEpc > 0, log(GGEpc + 1), NA)
+  )
 
-final_small <- final_data %>% select(geo, time, Lep, L_GDPpc, RESe, Lib)
+perform_imputation <- function(data){
+  imp_vars <- data %>% select(geo, time, Lep, L_GDPpc, L_ECHpc, L_GASp, L_GGEpc, RESe, Lib, Reg10)
+  ini <- mice(imp_vars, maxit=0, print=FALSE)
+  meth <- ini$meth; pred <- ini$pred
+  meth[c("geo","time")] <- ""; pred[, c("geo","time")] <- 0
+  imp <- mice(imp_vars, m=5, method="pmm", seed=12345, print=FALSE)
+  complete(imp, 1)
+}
 
-imp <- mice(final_small %>% select(Lep, L_GDPpc, RESe), m=3, maxit=5, print=FALSE)
-final_imp <- complete(imp,1)
-final_small <- bind_cols(final_small %>% select(geo,time,Lib), final_imp)
+final_data_imp <- perform_imputation(final_data)
 
-pdata <- pdata.frame(final_small, index = c("geo","time"))
-model <- pgmm(Lep ~ lag(Lep,1) + L_GDPpc + RESe + Lib |
-                lag(Lep,2:4) + lag(L_GDPpc,2:4) + lag(RESe,2:4),
-              data=pdata, effect="individual", model="twostep", transformation="ld", collapse=TRUE)
-summary(model)
+# =============================================================================
+# 6. STATISTIQUES DESCRIPTIVES ET VISUALISATION
+# =============================================================================
+cat("\n=== STATISTIQUES DESCRIPTIVES ===\n")
+stargazer(final_data_imp %>%
+            select(Lep, L_GDPpc, L_ECHpc, L_GASp, RESe, L_GGEpc, Lib, Reg10),
+          type="text", title="Statistiques descriptives", digits=3)
 
-# save
-saveRDS(list(results = results, merged = merged, model = model), "robust_download_results.rds")
+ggplot(final_data_imp, aes(x=time, y=exp(Lep), group=geo)) +
+  geom_line(alpha=0.6) +
+  geom_smooth(aes(group=1), method="loess", color="red", se=FALSE) +
+  theme_minimal()
+
+# =============================================================================
+# 7. ESTIMATION GMM
+# =============================================================================
+pdata <- pdata.frame(final_data_imp, index=c("geo","time"))
+
+estimate_gmm_models <- function(data){
+  list(
+    pgmm(Lep ~ lag(Lep,1) + L_GDPpc + L_GASp + RESe + Lib |
+           lag(Lep,2:4) + lag(L_GDPpc,2:4) + lag(RESe,2:4),
+         data=data, effect="individual", model="twostep",
+         transformation="ld", collapse=TRUE),
+    pgmm(Lep ~ lag(Lep,1) + L_ECHpc + L_GASp + RESe + Lib |
+           lag(Lep,2:4) + lag(L_ECHpc,2:4) + lag(RESe,2:4),
+         data=data, effect="individual", model="twostep",
+         transformation="ld", collapse=TRUE)
+  )
+}
+gmm_models <- estimate_gmm_models(pdata)
+
+# =============================================================================
+# 8. DIAGNOSTICS
+# =============================================================================
+perform_diagnostics <- function(models){
+  lapply(models, function(m){
+    sm <- summary(m)
+    list(summary=sm, ar1=mtest(m, order=1), ar2=mtest(m, order=2))
+  })
+}
+diagnostics <- perform_diagnostics(gmm_models)
+
+# =============================================================================
+# 9. COMPARAISON AVEC L’ARTICLE
+# =============================================================================
+article_coefs <- data.frame(
+  Variable=c("lag(Lep, 1)","L_GDPpc","L_GASp","RESe","Lib"),
+  Article_Coef=c(0.767,0.158,0.678,1.730,-0.343)
+)
+our_coefs <- summary(gmm_models[[1]])$coefficients %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Variable") %>%
+  select(Variable, Our_Coef=Estimate)
+comparison <- left_join(article_coefs, our_coefs, by="Variable") %>%
+  mutate(Diff=abs(Our_Coef-Article_Coef), Rel_Diff=Diff/abs(Article_Coef))
+
+# =============================================================================
+# 10. RAPPORT FINAL
+# =============================================================================
+generate_report <- function(models, diagnostics, comparison){
+  cat("\n", strrep("=",70), "\n")
+  cat("RAPPORT FINAL — RÉPLICATION GMM ÉLECTRICITÉ UE\n")
+  cat(strrep("=",70), "\n")
+  for(i in seq_along(models)){
+    sm <- diagnostics[[i]]$summary
+    cat("Modèle",i,"| AR(1) p=",round(diagnostics[[i]]$ar1$p.value,4),
+        "| AR(2) p=",round(diagnostics[[i]]$ar2$p.value,4),
+        "| Hansen p=",round(sm$diagnostics["Hansen",2],4),
+        "| Instruments=",sm$diagnostics["Instruments",1],"\n")
+  }
+  cat("Taux de correspondance (<50% diff):",
+      round(mean(comparison$Rel_Diff < 0.5, na.rm=TRUE)*100,1),"%\n")
+}
+generate_report(gmm_models, diagnostics, comparison)
+
+# =============================================================================
+# 11. EXPORTATION
+# =============================================================================
+saveRDS(list(data=final_data_imp, models=gmm_models,
+             diagnostics=diagnostics, comparison=comparison),
+        "Replication_GMM_Results_EU_Electricity.rds")
+write_csv(comparison, "Comparison_Article_vs_Replication.csv")
+cat("\n=== ANALYSE TERMINÉE ===\n")
