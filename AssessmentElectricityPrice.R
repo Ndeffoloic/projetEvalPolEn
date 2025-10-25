@@ -98,15 +98,20 @@ gge  <- prepare_eurostat_data(GGE_raw, "GGEpc")
 # --- agrégation spéciale pour ECH ---
 if(!is.null(ECH_raw)){
   ECH_small <- ECH_raw %>%
-    filter(nrg_bal == "FC_OTH_HH", siec == "E7000", unit == "KTOE") %>%
+    filter(nrg_bal == "FC_OTH_HH_E", siec == "E7000", unit == "KTOE") %>%
     group_by(geo, TIME_PERIOD) %>%
-    summarise(ECHpc = mean(values, na.rm=TRUE), .groups="drop")
+    summarise(ECHpc = mean(values, na.rm=TRUE), .groups="drop")%>%
+    rename(time = TIME_PERIOD)
 } else {
   ECH_small <- NULL
 }
-
+#print(distinct(ECH_raw, nrg_bal, siec, unit), n=500 )
+#View(ECH_raw)
 # Fusion allégée
 dfs <- list(ep, gasp, rese, gdp, ECH_small, gge)
+lapply(dfs, names) # pour vérifier si d'autres datasets n'ont pas "name" commme 
+#nonm de colonne.
+
 panel_data <- dfs %>%
   purrr::compact() %>%
   purrr::reduce(full_join, by=c("geo","time")) %>%
