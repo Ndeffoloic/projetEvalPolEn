@@ -1,248 +1,218 @@
-# =============================================================================
-# REPLICATION STUDY — Determinants of Household Electricity Prices in the EU
-# Da Silva & Cerqueira (2017)
-# System-GMM Panel Data Replication — Enhanced & Verified Version
-# =============================================================================
+########################################################################
+# SCRIPT FINAL (data.table) — Réplication Da Silva & Cerqueira (2017)
+# Variables: Ep, GGEpc, GASp, GDPpc (A: sdg_08_10), RESe, Lib, Reg10
+# Output: panel_elec.parquet, panel_elec.rds, descriptives_panel.csv
+########################################################################
 
-# =============================================================================
-# 0. PRÉAMBULE — Chargement des packages
-# =============================================================================
-required_packages <- c("eurostat", "dplyr", "plm", "tidyr", "readr", "countrycode",
-                       "mice", "stargazer", "ggplot2", "sandwich", "lmtest", "purrr")
-for(pkg in required_packages) {
-  if(!require(pkg, character.only = TRUE)) {
-    install.packages(pkg)
-    library(pkg, character.only = TRUE)
+# ---- 0) Packages ----
+pkgs <- c("data.table","eurostat","readxl","arrow")
+for(p in pkgs) if(!requireNamespace(p, quietly = TRUE)) install.packages(p)
+library(data.table); library(eurostat); library(readxl); library(arrow)
+
+# ---- 1) Paramètres ----
+year_min <- 2000L
+year_max <- 2014L
+
+eu_codes <- c(
+  "BE","CZ","DK","DE","EE","IE","EL","ES","FR","IT","CY","LV","LT",
+  "HU","MT","PL","PT","RO","SI","SK","FI","SE","UK"
+)
+
+message("Pays : ", paste(eu_codes, collapse = ", "))
+message("Période : ", year_min, "-", year_max)
+
+# ---- 2) utilitaires ----
+fix_time_column <- function(dt){
+  tcand <- intersect(c("time","TIME_PERIOD","year","TIME","Time","Year"), names(dt))
+  if(length(tcand) == 0) stop("Aucune colonne temporelle détectée.")
+  setnames(dt, tcand[1], "time")
+  if(inherits(dt$time, "Date")) dt[, time := as.integer(format(time, "%Y"))]
+  else if(is.numeric(dt$time)) dt[, time := as.integer(time)]
+  else dt[, time := as.integer(gsub("(-.*)$", "", as.character(time)))]
+  invisible(dt)
+}
+
+find_value_col <- function(dt){
+  vc <- intersect(c("values","value","OBS_VALUE","obsValue"), names(dt))
+  if(length(vc) == 0) stop("Aucune colonne de valeurs trouvée.")
+  vc[1]
+}
+
+safe_get_eurostat_filtered <- function(code, geo_filter, time_min, time_max, keep_cols = NULL){
+  message("Téléchargement: ", code)
+  raw <- get_eurostat(code, time_format = "num") %>% as.data.table()
+  fix_time_column(raw)
+  vcol <- find_value_col(raw)
+  setnames(raw, vcol, "value")
+  # optional: keep only columns needed
+  if(is.null(keep_cols)){
+    keep_cols <- intersect(c("geo","time","value", "unit","src_crf","freq","airpol"), names(raw))
   }
-}
-library(dplyr)
-library(lubridate)
-options(stringsAsFactors = FALSE)
-set.seed(12345)
-
-# =============================================================================
-# 1. PARAMÈTRES GÉNÉRAUX
-# =============================================================================
-eu_countries <- c("BE","CZ","DK","DE","EE","IE","GR","ES","FR","IT",
-                  "CY","LV","LT","HU","MT","PL","PT","RO","SI","SK",
-                  "FI","SE","UK")
-year_min <- 2000; year_max <- 2015
-
-# =============================================================================
-# 2. IMPORTATION / TÉLÉCHARGEMENT DES DONNÉES
-# =============================================================================
-
-safe_get_raw <- function(code, filters=NULL){
-  tryCatch({
-    df <- get_eurostat(code, filters=filters, time_format="date")
-    if(is.null(df) || nrow(df)==0) return(NULL)
-    df
-  }, error=function(e) NULL)
+  raw <- raw[, ..keep_cols]
+  # filter time & geo (we keep other dims until we choose filter criteria outside)
+  raw <- raw[time >= time_min & time <= time_max & geo %in% geo_filter]
+  return(raw)
 }
 
-prepare_eurostat_data <- function(df, valname){
-  if(is.null(df)) return(NULL)
-  time_col <- intersect(names(df), c("time", "TIME_PERIOD", "date"))[1]
-  value_col <- intersect(names(df), c("values", "value", "OBS_VALUE"))[1]
-  df %>%
-    rename(value = !!value_col, time = !!time_col) %>%
-    select(geo, time, value) %>%
-    mutate(time = as.integer(format(as.Date(as.character(time)), "%Y"))) %>%
-    rename(!!valname := value)
+# ---- 3) GASp (BP) ----
+if(!file.exists("gas_ts.csv")){
+  stop("Fichier gas_ts.csv absent dans le répertoire de travail. Crée-le (Year,GASp) puis relance.")
 }
+gas_ts <- fread("gas_ts.csv")
+# Filtrer période et calculer log
+gas_ts <- gas_ts[Year >= year_min & Year <= year_max]
+gas_ts[, L_GASp := log(GASp)]
+setnames(gas_ts, "Year", "time")  # faciliter join avec time
 
-# --- Lecture intelligente (local CSV ou API) ---
-load_or_download <- function(name, code, filters=NULL){
-  file <- paste0(name, ".csv")
-  if(file.exists(file)){
-    message("Lecture locale : ", file)
-    df <- read_csv(file, show_col_types = FALSE)
-    df <- df %>%
-      mutate(geo = ifelse("geo" %in% names(df), geo, STRUCTURE_ID),
-             time = ifelse("time" %in% names(df), time, as.integer(substr(`Time`,1,4))),
-             value = ifelse("values" %in% names(df), values, OBS_VALUE)) %>%
-      select(geo, time, value)
-    return(df)
-  } else {
-    message("Téléchargement depuis Eurostat : ", code)
-    df <- safe_get_raw(code, filters)
-    return(df)
-  }
+# ---- 4) GGEpc : sdg_13_10 (Greenhouse gas emissions per capita) ----
+# On lit et on filtre par unité et source observées dans ton export : unit=="T_HAB", src_crf=="TOTX4_MEMO"
+GGE_id <- "sdg_13_10"
+GGE_raw <- get_eurostat(GGE_id, time_format="num") %>% as.data.table()
+fix_time_column(GGE_raw)
+# détecter colonne value (sdg tables use 'values')
+vcol <- find_value_col(GGE_raw)
+if(vcol != "values") setnames(GGE_raw, vcol, "values")
+# Inspect: possible units are "I90","T_HAB" in ton export — keep T_HAB
+if(!("unit" %in% names(GGE_raw))) stop("sdg_13_10 ne contient pas de colonne 'unit' attendue.")
+if(!("src_crf" %in% names(GGE_raw))) stop("sdg_13_10 ne contient pas de colonne 'src_crf' attendue.")
+# Filtrage dimensionnel final:
+GGE_sub <- GGE_raw[
+  unit == "T_HAB" & src_crf == "TOTX4_MEMO" & geo %in% eu_codes & time >= year_min & time <= year_max,
+  .(geo, time, GGEpc = as.numeric(values))
+]
+message("GGE_sub lignes: ", nrow(GGE_sub), " (attendu ≈ 345 ; si <345 -> données manquantes Eurostat)")
+
+# ---- 5) Ep : prix électricité (nrg_pc_204) ----
+ep_id <- "nrg_pc_204"
+ep_raw <- get_eurostat(ep_id, time_format="num") %>% as.data.table()
+fix_time_column(ep_raw)
+vcol_ep <- find_value_col(ep_raw)
+setnames(ep_raw, vcol_ep, "price")
+# Filtrage pays/years et garder la valeur essentielle
+ep_sub <- ep_raw[ geo %in% eu_codes & time >= year_min & time <= year_max, .(geo, time, Ep = as.numeric(price)) ]
+ep_sub[, l_Ep := ifelse(is.na(Ep), NA_real_, log(Ep))]
+message("Ep_sub lignes: ", nrow(ep_sub))
+
+# ---- 6) GDPpc : sdg_08_10 (PIB réel per capita - option A) ----
+# sdg_08_10 usually contains GDP per capita in PPS or similar; detect unit and choose reasonable one
+gdp_id <- "sdg_08_10"
+gdp_raw <- get_eurostat(gdp_id, time_format="num") %>% as.data.table()
+fix_time_column(gdp_raw)
+vcol_gdp <- find_value_col(gdp_raw)
+setnames(gdp_raw, vcol_gdp, "value_gdp")
+# Keep plausible GDP unit: check unique(gdp_raw$unit) interactively if needed
+# We'll accept all units and convert them later if necessary; here we keep the numeric value
+gdp_sub <- gdp_raw[ geo %in% eu_codes & time >= year_min & time <= year_max, .(geo, time, GDPpc = as.numeric(value_gdp)) ]
+message("GDP_sub lignes: ", nrow(gdp_sub))
+
+# ---- 7) RESe : part des renouvelables (nrg_ind_ren or similar) ----
+# Try common Eurostat code: 'nrg_ind_ren' may not exist; we'll try a few plausible names and fallback to NA
+possible_res_ids <- c("nrg_ind_ren", "nrg_ind_renf", "sdg_07_30", "sdg_07_40")
+res_raw <- NULL
+for(id in possible_res_ids){
+  try({
+    tmp <- get_eurostat(id, time_format="num") %>% as.data.table()
+    if(nrow(tmp)>0) { res_raw <- tmp; res_id_used <- id; break }
+  }, silent = TRUE)
 }
-
-Ep_raw   <- load_or_download("Ep",   "nrg_pc_204_h")
-GASp_raw <- load_or_download("GASp", "nrg_pc_202_h")
-RESe_raw <- safe_get_raw("nrg_ind_ren")
-GDPpc_raw <- safe_get_raw("nama_10_pc")
-ECH_raw  <- safe_get_raw("nrg_bal_c")
-GGE_raw  <- load_or_download("GGE",  "env_air_gge_h") #J'ai volontairement modifié 
-#l'indice du dataset des GGE car il est complètement lourd lorsque téléchargé. 
-
-# =============================================================================
-# 3. PRÉPARATION ET AGRÉGATION
-# =============================================================================
-
-aggregate_large <- function(df, varname){
-  df %>%
-    filter(geo %in% eu_countries) %>%
-    mutate(year = as.integer(format(as.Date(as.character(time)), "%Y"))) %>%
-    group_by(geo, year) %>%
-    summarise(value = mean(values, na.rm=TRUE)) %>%
-    rename(time = year, !!varname := value)
-}
-
-ep   <- prepare_eurostat_data(Ep_raw, "Ep")
-gasp <- prepare_eurostat_data(GASp_raw, "GASp")
-rese <- prepare_eurostat_data(RESe_raw, "RESe")
-gdp  <- prepare_eurostat_data(GDPpc_raw, "GDPpc")
-gge  <- prepare_eurostat_data(GGE_raw, "GGEpc")
-
-# --- agrégation spéciale pour ECH ---
-if(!is.null(ECH_raw)){
-  ECH_small <- ECH_raw %>%
-    filter(nrg_bal == "FC_OTH_HH_E", siec == "E7000", unit == "KTOE") %>%
-    mutate(TIME_PERIOD = year(TIME_PERIOD)) %>%    # ⬅️ Extraire uniquement l'année
-    group_by(geo, TIME_PERIOD) %>%
-    summarise(ECHpc = mean(values, na.rm=TRUE), .groups="drop")%>%
-    rename(time = TIME_PERIOD)
+if(is.null(res_raw)){
+  message("Aucun dataset RESe trouvé automatiquement parmi candidates; RESe sera NA (tu peux fournir ID exact).")
+  res_sub <- data.table(geo = eu_codes, time = seq(year_min, year_max), RESe = NA_real_)[, .(geo, time, RESe)]
 } else {
-  ECH_small <- NULL
-}
-#print(distinct(ECH_raw, nrg_bal, siec, unit), n=500 )
-#View(ECH_raw)
-# Fusion allégée
-dfs <- list(ep, gasp, rese, gdp, ECH_small, gge)
-lapply(dfs, names) # pour vérifier si d'autres datasets n'ont pas "name" commme 
-#nonm de colonne.
-
-panel_data <- dfs %>%
-  purrr::compact() %>%
-  purrr::reduce(full_join, by=c("geo","time")) %>%
-  filter(geo %in% eu_countries, time >= year_min, time <= year_max)
-
-# =============================================================================
-# 4. VARIABLES DE POLITIQUE
-# =============================================================================
-
-policy_data <- data.frame(
-  geo = eu_countries,
-  Lib_year = c(2007, 2006, 2003, 1998, 2009, 2005, 2007, 2003, 2007, 2007,
-               2010, 2007, 2007, 2007, 2010, 2007, 2007, 2007, 2007, 2007,
-               1997, 1996, 1990),
-  Reg10 = c(0,0,1,0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,0,1,0,0,0)
-)
-
-final_data <- panel_data %>%
-  left_join(policy_data, by = "geo") %>%
-  mutate(
-    Lib = ifelse(time >= Lib_year, 1, 0),
-    RESe = RESe / 100
-  )
-
-# =============================================================================
-# 5. TRANSFORMATIONS ET IMPUTATION MULTIPLE
-# =============================================================================
-final_data <- final_data %>%
-  mutate(
-    Lep = ifelse(Ep > 0, log(Ep), NA),
-    L_GDPpc = ifelse(GDPpc > 0, log(GDPpc), NA),
-    L_ECHpc = ifelse(ECHpc > 0, log(ECHpc), NA),
-    L_GASp = ifelse(GASp > 0, log(GASp), NA),
-    L_GGEpc = ifelse(GGEpc > 0, log(GGEpc + 1), NA)
-  )
-
-perform_imputation <- function(data){
-  imp_vars <- data %>% select(geo, time, Lep, L_GDPpc, L_ECHpc, L_GASp, L_GGEpc, RESe, Lib, Reg10)
-  ini <- mice(imp_vars, maxit=0, print=FALSE)
-  meth <- ini$meth; pred <- ini$pred
-  meth[c("geo","time")] <- ""; pred[, c("geo","time")] <- 0
-  imp <- mice(imp_vars, m=5, method="pmm", seed=12345, print=FALSE)
-  complete(imp, 1)
+  fix_time_column(res_raw)
+  vcol_res <- find_value_col(res_raw)
+  setnames(res_raw, vcol_res, "value_res")
+  res_sub <- res_raw[ geo %in% eu_codes & time >= year_min & time <= year_max, .(geo, time, RESe = as.numeric(value_res)) ]
+  message("RESe chargé depuis: ", res_id_used, " (", nrow(res_sub)," lignes )")
 }
 
-final_data_imp <- perform_imputation(final_data)
-
-# =============================================================================
-# 6. STATISTIQUES DESCRIPTIVES ET VISUALISATION
-# =============================================================================
-cat("\n=== STATISTIQUES DESCRIPTIVES ===\n")
-stargazer(final_data_imp %>%
-            select(Lep, L_GDPpc, L_ECHpc, L_GASp, RESe, L_GGEpc, Lib, Reg10),
-          type="text", title="Statistiques descriptives", digits=3)
-
-ggplot(final_data_imp, aes(x=time, y=exp(Lep), group=geo)) +
-  geom_line(alpha=0.6) +
-  geom_smooth(aes(group=1), method="loess", color="red", se=FALSE) +
-  theme_minimal()
-
-# =============================================================================
-# 7. ESTIMATION GMM
-# =============================================================================
-pdata <- pdata.frame(final_data_imp, index=c("geo","time"))
-
-estimate_gmm_models <- function(data){
-  list(
-    pgmm(Lep ~ lag(Lep,1) + L_GDPpc + L_GASp + RESe + Lib |
-           lag(Lep,2:4) + lag(L_GDPpc,2:4) + lag(RESe,2:4),
-         data=data, effect="individual", model="twostep",
-         transformation="ld", collapse=TRUE),
-    pgmm(Lep ~ lag(Lep,1) + L_ECHpc + L_GASp + RESe + Lib |
-           lag(Lep,2:4) + lag(L_ECHpc,2:4) + lag(RESe,2:4),
-         data=data, effect="individual", model="twostep",
-         transformation="ld", collapse=TRUE)
-  )
-}
-gmm_models <- estimate_gmm_models(pdata)
-
-# =============================================================================
-# 8. DIAGNOSTICS
-# =============================================================================
-perform_diagnostics <- function(models){
-  lapply(models, function(m){
-    sm <- summary(m)
-    list(summary=sm, ar1=mtest(m, order=1), ar2=mtest(m, order=2))
-  })
-}
-diagnostics <- perform_diagnostics(gmm_models)
-
-# =============================================================================
-# 9. COMPARAISON AVEC L’ARTICLE
-# =============================================================================
-article_coefs <- data.frame(
-  Variable=c("lag(Lep, 1)","L_GDPpc","L_GASp","RESe","Lib"),
-  Article_Coef=c(0.767,0.158,0.678,1.730,-0.343)
-)
-our_coefs <- summary(gmm_models[[1]])$coefficients %>%
-  as.data.frame() %>%
-  tibble::rownames_to_column("Variable") %>%
-  select(Variable, Our_Coef=Estimate)
-comparison <- left_join(article_coefs, our_coefs, by="Variable") %>%
-  mutate(Diff=abs(Our_Coef-Article_Coef), Rel_Diff=Diff/abs(Article_Coef))
-
-# =============================================================================
-# 10. RAPPORT FINAL
-# =============================================================================
-generate_report <- function(models, diagnostics, comparison){
-  cat("\n", strrep("=",70), "\n")
-  cat("RAPPORT FINAL — RÉPLICATION GMM ÉLECTRICITÉ UE\n")
-  cat(strrep("=",70), "\n")
-  for(i in seq_along(models)){
-    sm <- diagnostics[[i]]$summary
-    cat("Modèle",i,"| AR(1) p=",round(diagnostics[[i]]$ar1$p.value,4),
-        "| AR(2) p=",round(diagnostics[[i]]$ar2$p.value,4),
-        "| Hansen p=",round(sm$diagnostics["Hansen",2],4),
-        "| Instruments=",sm$diagnostics["Instruments",1],"\n")
+# ---- 8) Lib / Reg10 (CSV fourni) ----
+# lib_reg10.csv must contain: geo, lib_year, reg10 (0/1)
+if(file.exists("lib_reg10.csv")){
+  libtab <- fread("lib_reg10.csv")
+  if(!all(c("geo","lib_year","reg10") %in% names(libtab))){
+    stop("lib_reg10.csv doit contenir au moins les colonnes: geo, lib_year, reg10")
   }
-  cat("Taux de correspondance (<50% diff):",
-      round(mean(comparison$Rel_Diff < 0.5, na.rm=TRUE)*100,1),"%\n")
+} else {
+  message("lib_reg10.csv absent : Lib et Reg10 seront créés comme NA (tu peux fournir le CSV).")
+  libtab <- NULL
 }
-generate_report(gmm_models, diagnostics, comparison)
 
-# =============================================================================
-# 11. EXPORTATION
-# =============================================================================
-saveRDS(list(data=final_data_imp, models=gmm_models,
-             diagnostics=diagnostics, comparison=comparison),
-        "Replication_GMM_Results_EU_Electricity.rds")
-write_csv(comparison, "Comparison_Article_vs_Replication.csv")
-cat("\n=== ANALYSE TERMINÉE ===\n")
+# ---- 9) Construire panel final (data.table joins) ----
+# Start from ep_sub (one row per country-year expected)
+setkey(ep_sub, geo, time)
+setkey(GGE_sub, geo, time)
+setkey(gdp_sub, geo, time)
+setkey(res_sub, geo, time)
+setkey(gas_ts, time)  # gas_ts has column 'time' already
+
+# Merge stepwise (left join on ep_sub)
+panel <- copy(ep_sub)
+panel <- merge(panel, GGE_sub, by = c("geo","time"), all.x = TRUE)
+panel <- merge(panel, gdp_sub, by = c("geo","time"), all.x = TRUE)
+panel <- merge(panel, res_sub, by = c("geo","time"), all.x = TRUE)
+# join gas_ts by time only
+panel <- merge(panel, gas_ts[, .(time, GASp, L_GASp)], by = "time", all.x = TRUE)
+
+# Add Lib / Reg10 if provided
+if(!is.null(libtab)){
+  # left join lib_year/reg10 by geo
+  setkey(libtab, geo)
+  # create panels columns
+  panel[, Lib := NA_integer_]
+  panel[, Reg10 := NA_integer_]
+  # fill Reg10
+  panel[libtab, Reg10 := i.reg10, on = "geo"]
+  # create Lib as panel$time >= lib_year
+  panel[libtab, Lib := as.integer(panel$time >= libtab$lib_year[match(panel$geo, libtab$geo)]) ]
+}
+
+# reorder columns
+setcolorder(panel, c("geo","time","Ep","l_Ep","GGEpc","GASp","L_GASp","GDPpc","RESe","Lib","Reg10"))
+
+# ---- 10) Vérifications & diagnostics ----
+message("Panel lignes: ", nrow(panel))
+message("Pays distincts dans panel: ", length(unique(panel$geo)))
+message("Années min/max: ", min(panel$time, na.rm=TRUE), "/", max(panel$time, na.rm=TRUE))
+
+# Count missing by variable
+missing_counts <- sapply(panel[, .(Ep,GGEpc,GASp,GDPpc,RESe,Lib,Reg10)], function(x) sum(is.na(x)))
+print(data.table(variable = names(missing_counts), missing = as.integer(missing_counts)))
+
+# If expected dimensions too large (sanity)
+expected_max <- length(eu_codes) * (year_max - year_min + 1)
+if(nrow(panel) > expected_max * 5) warning("Panel très grand (plusieurs fois le nombre attendu) — vérifier doublons dans sources.")
+
+# Check duplicates
+dups <- panel[, .N, by = .(geo,time)][N>1]
+if(nrow(dups) > 0) {
+  message("ATTENTION: doublons (geo,time) détectés : ", nrow(dups), " cas. Inspecte sources.")
+  print(head(dups))
+}
+
+# ---- 11) Statistiques descriptives pour comparaison article ----
+desc_vars <- c("Ep","GGEpc","GASp","GDPpc","RESe")
+desc_tab <- rbindlist(lapply(desc_vars, function(v){
+  if(!(v %in% names(panel))) return(NULL)
+  vec <- panel[[v]]
+  data.table(variable = v,
+             mean = mean(vec, na.rm=TRUE),
+             sd   = sd(vec, na.rm=TRUE),
+             median = median(vec, na.rm=TRUE),
+             n_obs = sum(!is.na(vec)))
+}), use.names = TRUE, fill = TRUE)
+
+fwrite(desc_tab, "descriptives_panel.csv")
+message("Descriptives exportées -> descriptives_panel.csv")
+print(desc_tab)
+
+# ---- 12) Sauvegardes ----
+write_parquet(panel, "panel_elec.parquet")
+saveRDS(panel, file = "panel_elec.rds")
+message("Exports : panel_elec.parquet , panel_elec.rds")
+
+# ---- 13) Petits extras: affichage d'un échantillon ----
+print(head(panel, 20))
+
+# Fin
+message("SCRIPT TERMINE. Si tu veux, je peux lancer les regressions Arellano-Bond ou produire tableaux comparatifs avec l'article.")
