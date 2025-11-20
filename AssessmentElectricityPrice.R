@@ -105,6 +105,11 @@ setnames(gdp_raw, vcol_gdp, "value_gdp")
 gdp_sub <- gdp_raw[ geo %in% eu_codes & time >= year_min & time <= year_max, .(geo, time, GDPpc = as.numeric(value_gdp)) ]
 message("GDP_sub lignes: ", nrow(gdp_sub))
 
+unique(gdp_raw$unit)
+unique(gdp_raw$na_item)
+unique(gdp_raw$sex)
+unique(gdp_raw$age)
+
 # ---- 7) RESe : part des renouvelables (nrg_ind_ren or similar) ----
 # Try common Eurostat code: 'nrg_ind_ren' may not exist; we'll try a few plausible names and fallback to NA
 possible_res_ids <- c("nrg_ind_ren", "nrg_ind_renf", "sdg_07_30", "sdg_07_40")
