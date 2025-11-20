@@ -238,25 +238,30 @@ if(nrow(dups) > 0) {
 }
 
 # ---- 11) Statistiques descriptives pour comparaison article ----
-desc_vars <- c("Ep","GGEpc","GASp","GDPpc","RESe")
-desc_tab <- rbindlist(lapply(desc_vars, function(v){
-  if(!(v %in% names(panel))) return(NULL)
-  vec <- panel[[v]]
-  data.table(variable = v,
-             mean = mean(vec, na.rm=TRUE),
-             sd   = sd(vec, na.rm=TRUE),
-             median = median(vec, na.rm=TRUE),
-             n_obs = sum(!is.na(vec)))
-}), use.names = TRUE, fill = TRUE)
 
-fwrite(desc_tab, "descriptives_panel.csv")
-message("Descriptives exportées -> descriptives_panel.csv")
-print(desc_tab)
+# valeurs issues du papier Da Silva & Cerqueira (2017)
+stats_article <- data.table(
+  variable = c("Ep",    "GGEpc", "GASp", "GDPpc", "RESe"),
+  mean_art = c(0.163,    9.45,    9.18,   23375,   23.4),
+  sd_art   = c(0.053,    2.85,    1.41,   12270,   14.10)
+)
 
-# ---- 12) Sauvegardes ----
-write_parquet(panel, "panel_elec.parquet")
-saveRDS(panel, file = "panel_elec.rds")
-message("Exports : panel_elec.parquet , panel_elec.rds")
+# calcul descriptifs côté données obtenues
+stats_panel <- rbindlist(lapply(c("Ep","GGEpc","GASp","GDPpc","RESe"), function(v){
+  data.table(
+    variable = v,
+    mean = mean(panel[[v]], na.rm=TRUE),
+    sd   = sd(panel[[v]], na.rm=TRUE),
+    median = median(panel[[v]], na.rm=TRUE),
+    n_obs = sum(!is.na(panel[[v]]))
+  )
+}))
 
-# ---- 13) Petits extras: affichage d'un échantillon ----
-print(head(panel, 20))
+# fusion article vs résultats
+comparatif <- merge(stats_panel, stats_article, by="variable", all.x=TRUE)
+
+print(comparatif)
+
+fwrite(comparatif, "comparatif_article_vs_nous.csv")
+message("Table comparatif article vs nos résultats → comparatif_article_vs_nous.csv")
+
