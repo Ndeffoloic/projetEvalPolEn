@@ -88,10 +88,31 @@ ep_raw <- get_eurostat(ep_id, time_format="num") %>% as.data.table()
 fix_time_column(ep_raw)
 vcol_ep <- find_value_col(ep_raw)
 setnames(ep_raw, vcol_ep, "price")
-# Filtrage pays/years et garder la valeur essentielle
-ep_sub <- ep_raw[ geo %in% eu_codes & time >= year_min & time <= year_max, .(geo, time, Ep = as.numeric(price)) ]
+
+# Filtrons pour ne garder que les données annuelles (moyenne des semestres)
+ep_raw <- ep_raw[
+  geo %in% eu_codes &
+    time >= year_min &
+    time <= year_max &
+    unit == "KWH" &
+    tax == "I_TAX" &  # Prix incluant les taxes
+    product == "6000"  # Code produit pour l'électricité (à vérifier)
+]
+
+# Agrégat : moyenne des prix par (geo, time=année)
+ep_sub <- ep_raw[, .(Ep = mean(price, na.rm = TRUE)), by = .(geo, time)]
+
+# Calculer le log
 ep_sub[, l_Ep := ifelse(is.na(Ep), NA_real_, log(Ep))]
-message("Ep_sub lignes: ", nrow(ep_sub))
+
+# Vérifier les doublons résiduels
+if (nrow(ep_sub[, .N, by = .(geo, time)][N > 1]) > 0) {
+  message("ATTENTION : doublons dans Ep après agrégation. Vérifie les dimensions.")
+  print(ep_sub[, .N, by = .(geo, time)][N > 1])
+} else {
+  message("Ep filtré et agrégé : ", nrow(ep_sub), " lignes, sans doublons.")
+}
+
 
 # ---- 6) GDPpc : sdg_08_10 (PIB réel per capita - option A) ----
 # sdg_08_10 usually contains GDP per capita in PPS or similar; detect unit and choose reasonable one
