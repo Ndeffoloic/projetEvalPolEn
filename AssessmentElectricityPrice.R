@@ -7,7 +7,7 @@
 # ---- 0) Packages ----
 pkgs <- c("data.table","eurostat","readxl","arrow")
 for(p in pkgs) if(!requireNamespace(p, quietly = TRUE)) install.packages(p)
-library(data.table); library(eurostat); library(readxl); library(arrow)
+library(data.table); library(eurostat); library(readxl); library(arrow); library(plm)
 
 # ---- 1) Paramètres ----
 year_min <- 2000L
@@ -265,3 +265,28 @@ print(comparatif)
 fwrite(comparatif, "comparatif_article_vs_nous.csv")
 message("Table comparatif article vs nos résultats → comparatif_article_vs_nous.csv")
 
+# ---- 12) Régression dynamique Arellano-Bond ----
+
+vars_model <- c("l_Ep","GGEpc","GDPpc","GASp","RESe","Lib","Reg10")
+
+panel_gmm <- na.omit(panel[, c("geo","time", vars_model), with=FALSE])
+
+pdata <- pdata.frame(panel_gmm, index = c("geo","time"))
+
+# Modèle Arellano-Bond (GMM)
+mod_ab <- pgmm(
+  l_Ep ~ lag(l_Ep, 1) + GGEpc + GDPpc + GASp + RESe + Lib + Reg10 |
+    lag(l_Ep, 2:3),      # instruments GMM
+  data = pdata,
+  effect = "twoways",
+  model = "twosteps",
+  transformation = "d"
+)
+summary(mod_ab)
+
+# Tests AR(1) et AR(2)
+mtest(mod_ab, order = 1)
+mtest(mod_ab, order = 2)
+
+# Test Hansen des sur-identifications
+sargan(mod_ab)
