@@ -99,13 +99,18 @@ ep_raw <- ep_raw[
     product == "6000"  # Code produit pour l'électricité (à vérifier)
 ]
 
+unique(ep_raw$band)
+unique(ep_raw$product)
+unique(ep_raw$currency)
+
+
 # Agrégat : moyenne des prix par (geo, time=année)
 ep_sub <- ep_raw[, .(Ep = mean(price, na.rm = TRUE)), by = .(geo, time)]
 
 # Calculer le log
 ep_sub[, l_Ep := ifelse(is.na(Ep), NA_real_, log(Ep))]
 
-# Vérifier les doublons résiduels
+# Vérifions les doublons résiduels
 if (nrow(ep_sub[, .N, by = .(geo, time)][N > 1]) > 0) {
   message("ATTENTION : doublons dans Ep après agrégation. Vérifie les dimensions.")
   print(ep_sub[, .N, by = .(geo, time)][N > 1])
