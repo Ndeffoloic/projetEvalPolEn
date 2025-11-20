@@ -95,14 +95,10 @@ ep_raw <- ep_raw[
     time >= year_min &
     time <= year_max &
     unit == "KWH" &
-    tax == "I_TAX" &  # Prix incluant les taxes
-    product == "6000"  # Code produit pour l'électricité (à vérifier)
+    tax == "I_TAX" &
+    product == "6000" &
+    currency == "EUR"   
 ]
-
-unique(ep_raw$band)
-unique(ep_raw$product)
-unique(ep_raw$currency)
-
 
 # Agrégat : moyenne des prix par (geo, time=année)
 ep_sub <- ep_raw[, .(Ep = mean(price, na.rm = TRUE)), by = .(geo, time)]
