@@ -102,13 +102,15 @@ vcol_gdp <- find_value_col(gdp_raw)
 setnames(gdp_raw, vcol_gdp, "value_gdp")
 # Keep plausible GDP unit: check unique(gdp_raw$unit) interactively if needed
 # We'll accept all units and convert them later if necessary; here we keep the numeric value
-gdp_sub <- gdp_raw[ geo %in% eu_codes & time >= year_min & time <= year_max, .(geo, time, GDPpc = as.numeric(value_gdp)) ]
-message("GDP_sub lignes: ", nrow(gdp_sub))
+gdp_sub <- gdp_raw[
+  unit == "CLV20_EUR_HAB" &
+    na_item == "B1GQ" &
+    geo %in% eu_codes &
+    time >= year_min & time <= year_max,
+  .(geo, time, GDPpc = as.numeric(value_gdp))
+]
 
-unique(gdp_raw$unit)
-unique(gdp_raw$na_item)
-unique(gdp_raw$sex)
-unique(gdp_raw$age)
+message("GDP_sub lignes: ", nrow(gdp_sub))
 
 # ---- 7) RESe : part des renouvelables (nrg_ind_ren or similar) ----
 # Try common Eurostat code: 'nrg_ind_ren' may not exist; we'll try a few plausible names and fallback to NA
@@ -130,6 +132,13 @@ if(is.null(res_raw)){
   res_sub <- res_raw[ geo %in% eu_codes & time >= year_min & time <= year_max, .(geo, time, RESe = as.numeric(value_res)) ]
   message("RESe chargé depuis: ", res_id_used, " (", nrow(res_sub)," lignes )")
 }
+unique(res_raw$unit)
+unique(res_raw$siec)
+unique(res_raw$nrg_bal)
+unique(res_raw$indic_nrg)
+unique(res_raw$freq)
+head(res_raw)
+
 
 # ---- 8) Lib / Reg10 (CSV fourni) ----
 # lib_reg10.csv must contain: geo, lib_year, reg10 (0/1)
