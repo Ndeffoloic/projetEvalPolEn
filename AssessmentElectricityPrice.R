@@ -112,8 +112,7 @@ gdp_sub <- gdp_raw[
 
 message("GDP_sub lignes: ", nrow(gdp_sub))
 
-# ---- 7) RESe : part des renouvelables (nrg_ind_ren or similar) ----
-# Try common Eurostat code: 'nrg_ind_ren' may not exist; we'll try a few plausible names and fallback to NA
+# ---- 7) RESe : part des renouvelables (nrg_ind_ren) ----
 possible_res_ids <- c("nrg_ind_ren", "nrg_ind_renf", "sdg_07_30", "sdg_07_40")
 res_raw <- NULL
 for(id in possible_res_ids){
@@ -122,6 +121,7 @@ for(id in possible_res_ids){
     if(nrow(tmp)>0) { res_raw <- tmp; res_id_used <- id; break }
   }, silent = TRUE)
 }
+
 if(is.null(res_raw)){
   message("Aucun dataset RESe trouvé automatiquement parmi candidates; RESe sera NA (tu peux fournir ID exact).")
   res_sub <- data.table(geo = eu_codes, time = seq(year_min, year_max), RESe = NA_real_)[, .(geo, time, RESe)]
@@ -129,15 +129,25 @@ if(is.null(res_raw)){
   fix_time_column(res_raw)
   vcol_res <- find_value_col(res_raw)
   setnames(res_raw, vcol_res, "value_res")
-  res_sub <- res_raw[ geo %in% eu_codes & time >= year_min & time <= year_max, .(geo, time, RESe = as.numeric(value_res)) ]
-  message("RESe chargé depuis: ", res_id_used, " (", nrow(res_sub)," lignes )")
+  
+  # Filtrer pour obtenir la part des renouvelables dans l'électricité (REN_ELC)
+  res_sub <- res_raw[
+    geo %in% eu_codes &
+      time >= year_min &
+      time <= year_max &
+      nrg_bal == "REN_ELC" &  # Sélectionner uniquement la part dans l'électricité
+      unit == "PC",           # Unité en pourcentage
+    .(geo, time, RESe = as.numeric(value_res))
+  ]
+  
+  # Vérifier les doublons résiduels (au cas où)
+  if (nrow(res_sub[, .N, by=.(geo,time)][N > 1]) > 0) {
+    message("ATTENTION : doublons résiduels dans RESe après filtrage. Vérifie les dimensions.")
+    print(res_sub[, .N, by=.(geo,time)][N > 1])
+  } else {
+    message("RESe chargé depuis: ", res_id_used, " (", nrow(res_sub), " lignes, sans doublons)")
+  }
 }
-unique(res_raw$unit)
-unique(res_raw$siec)
-unique(res_raw$nrg_bal)
-unique(res_raw$indic_nrg)
-unique(res_raw$freq)
-head(res_raw)
 
 
 # ---- 8) Lib / Reg10 (CSV fourni) ----
@@ -170,16 +180,17 @@ panel <- merge(panel, gas_ts[, .(time, GASp, L_GASp)], by = "time", all.x = TRUE
 
 # Add Lib / Reg10 if provided
 if(!is.null(libtab)){
-  # left join lib_year/reg10 by geo
+  # Set key for libtab
   setkey(libtab, geo)
-  # create panels columns
+  # Create columns Lib and Reg10 in panel
   panel[, Lib := NA_integer_]
   panel[, Reg10 := NA_integer_]
-  # fill Reg10
+  # Fill Reg10 by joining with libtab
   panel[libtab, Reg10 := i.reg10, on = "geo"]
-  # create Lib as panel$time >= lib_year
-  panel[libtab, Lib := as.integer(panel$time >= libtab$lib_year[match(panel$geo, libtab$geo)]) ]
+  # Fill Lib: for each geo, set Lib=1 if time >= lib_year, else 0
+  panel[, Lib := as.integer(time >= libtab$lib_year[match(geo, libtab$geo)]), by = geo]
 }
+
 
 # reorder columns
 setcolorder(panel, c("geo","time","Ep","l_Ep","GGEpc","GASp","L_GASp","GDPpc","RESe","Lib","Reg10"))
@@ -227,6 +238,3 @@ message("Exports : panel_elec.parquet , panel_elec.rds")
 
 # ---- 13) Petits extras: affichage d'un échantillon ----
 print(head(panel, 20))
-
-# Fin
-message("SCRIPT TERMINE. Si tu veux, je peux lancer les regressions Arellano-Bond ou produire tableaux comparatifs avec l'article.")
