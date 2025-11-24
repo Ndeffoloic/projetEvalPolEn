@@ -290,3 +290,23 @@ mtest(mod_ab, order = 2)
 
 # Test Hansen des sur-identifications
 sargan(mod_ab)
+
+# --- Vérifications des datasets et des dates pour expliquer la perte de données dans le panel : 
+
+# 1) Période effective dans le panel final
+print(range(panel$time, na.rm=TRUE))
+table(panel$time)          # distribution par année
+
+# 2) Pour chaque variable, min time disponible (par pays)
+vars <- c("Ep","GGEpc","GDPpc","RESe")
+for(v in vars){
+  tmp <- panel[!is.na(get(v)), .(min_time = min(time, na.rm=TRUE)), by = geo]
+  message("Variable: ", v, " ; pays avec min_time > 2000 :")
+  print(tmp[min_time > 2000])
+}
+
+# 3) Pour Ep spécifiquement, inspecte disponibilité brute
+ep_all <- get_eurostat("nrg_pc_204", time_format="num") %>% as.data.table()
+fix_time_column(ep_all)
+ep_all[, .(min_time = min(time, na.rm=TRUE)), by = geo][order(min_time)]
+unique(ep_all$time) # toutes les années présentes dans la table brute
