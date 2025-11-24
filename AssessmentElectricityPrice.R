@@ -289,6 +289,25 @@ sargan(mod_ab_min)
 
 # ---- 13) Synthèse des modèles : OLS, FE, AB-GMM ----
 
+pdata_full <- pdata.frame(panel, index=c("geo","time"))
+
+mod_pool <- plm(
+  l_Ep ~ lag(l_Ep,1) + GGEpc + GDPpc + GASp + RESe + Lib + Reg10, 
+  data = pdata_full,
+  model = "pooling")
+
+coeftest(mod_pool, vcov = vcovHC(mod_pool, type="HC1", cluster="group"))
+
+  mod_fe <- plm(
+  l_Ep ~ lag(l_Ep,1) + GGEpc + GDPpc + GASp + RESe + Lib + Reg10,
+  data = pdata_full,
+  model = "within",
+  effect = "twoways"
+)
+
+coeftest(mod_fe, vcov = vcovHC(mod_fe, type="HC1", cluster="group"))
+
+
 extract_results <- function(model, model_name, robust_vcov = NULL) {
   
   if(!is.null(robust_vcov)){
