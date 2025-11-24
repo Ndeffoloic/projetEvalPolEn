@@ -310,3 +310,11 @@ ep_all <- get_eurostat("nrg_pc_204", time_format="num") %>% as.data.table()
 fix_time_column(ep_all)
 ep_all[, .(min_time = min(time, na.rm=TRUE)), by = geo][order(min_time)]
 unique(ep_all$time) # toutes les années présentes dans la table brute
+
+ep_all <- get_eurostat("nrg_pc_204", time_format="num") %>% as.data.table()
+fix_time_column(ep_all)
+# inspect combinations par pays
+ep_all[, .(min_time = min(time, na.rm=TRUE)), by = .(geo, currency, product, unit)][order(geo, min_time)] |> head(100)
+# quels pays ont des observations avant 2007 (quel que soit currency/product)?
+ep_all[, .(min_time = min(time, na.rm=TRUE)), by = geo][order(min_time)]
+
