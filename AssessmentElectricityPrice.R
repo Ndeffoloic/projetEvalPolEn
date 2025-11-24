@@ -8,7 +8,8 @@
 pkgs <- c("data.table","eurostat","readxl","arrow")
 for(p in pkgs) if(!requireNamespace(p, quietly = TRUE)) install.packages(p)
 library(data.table); library(eurostat); library(readxl); library(arrow); library(plm)
-
+library(lmtest)
+library(sandwich)
 # ---- 1) Paramètres ----
 year_min <- 2000L
 year_max <- 2014L
@@ -284,3 +285,24 @@ summary(mod_ab_min)
 mtest(mod_ab_min, 1)
 mtest(mod_ab_min, 2)
 sargan(mod_ab_min)
+
+# ---- 13) Régression Modèle Pooled OLS + FE + Synthèse avec AB ----
+
+mod_pool <- plm(
+  l_Ep ~ lag(l_Ep,1) + GGEpc + GDPpc + GASp + RESe + Lib + Reg10,
+  data = pdata_full,
+  model = "pooling"
+)
+
+coeftest(mod_pool, vcov = vcovHC(mod_pool, type="HC1", cluster="group"))
+
+mod_fe <- plm(
+  l_Ep ~ lag(l_Ep,1) + GGEpc + GDPpc + GASp + RESe + Lib + Reg10,
+  data = pdata_full,
+  model = "within",
+  effect = "twoways"
+)
+
+coeftest(mod_fe, vcov = vcovHC(mod_fe, type="HC1", cluster="group"))
+
+
