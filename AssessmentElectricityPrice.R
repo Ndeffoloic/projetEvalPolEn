@@ -10,6 +10,7 @@ for(p in pkgs) if(!requireNamespace(p, quietly = TRUE)) install.packages(p)
 library(data.table); library(eurostat); library(readxl); library(arrow); library(plm)
 library(lmtest)
 library(sandwich)
+library(dplyr)
 # ---- 1) Paramètres ----
 year_min <- 2000L
 year_max <- 2014L
@@ -286,23 +287,64 @@ mtest(mod_ab_min, 1)
 mtest(mod_ab_min, 2)
 sargan(mod_ab_min)
 
-# ---- 13) Régression Modèle Pooled OLS + FE + Synthèse avec AB ----
+# ---- 13) Synthèse des modèles : OLS, FE, AB-GMM ----
 
-mod_pool <- plm(
-  l_Ep ~ lag(l_Ep,1) + GGEpc + GDPpc + GASp + RESe + Lib + Reg10,
-  data = pdata_full,
-  model = "pooling"
+extract_results <- function(model, model_name, robust_vcov = NULL) {
+  
+  if(!is.null(robust_vcov)){
+    ct <- coeftest(model, vcov = robust_vcov)
+  } else {
+    ct <- summary(model)$coefficients
+  }
+  
+  data.frame(
+    model = model_name,
+    variable = rownames(ct),
+    estimate = ct[,1],
+    std_error = ct[,2],
+    t_value = ct[,3],
+    p_value = ct[,4]
+  )
+}
+
+# ---- 13.2 Résultats Pooled OLS ----
+
+res_pool <- extract_results(
+  mod_pool,
+  model_name = "Pooled OLS",
+  robust_vcov = vcovHC(mod_pool, type = "HC1", cluster = "group")
 )
 
-coeftest(mod_pool, vcov = vcovHC(mod_pool, type="HC1", cluster="group"))
+# ---- 13.3 Résultats FE (Two-Ways Fixed Effects) ----
 
-mod_fe <- plm(
-  l_Ep ~ lag(l_Ep,1) + GGEpc + GDPpc + GASp + RESe + Lib + Reg10,
-  data = pdata_full,
-  model = "within",
-  effect = "twoways"
+res_fe <- extract_results(
+  mod_fe,
+  model_name = "Two-Ways FE",
+  robust_vcov = vcovHC(mod_fe, type = "HC1", cluster = "group")
 )
 
-coeftest(mod_fe, vcov = vcovHC(mod_fe, type="HC1", cluster="group"))
+# ---- 13.4 Résultats Arellano–Bond GMM minimal ----
 
+summary_ab <- summary(mod_ab_min)
 
+res_ab <- data.frame(
+  model = "AB-GMM (1-step)",
+  variable = rownames(summary_ab$coefficients),
+  estimate = summary_ab$coefficients[,1],
+  std_error = summary_ab$coefficients[,2],
+  t_value = summary_ab$coefficients[,3],
+  p_value = summary_ab$coefficients[,4]
+)
+
+# ---- 13.5 Fusion des résultats ----
+
+results_all <- bind_rows(res_pool, res_fe, res_ab)
+
+# ---- 13.6 Exportation CSV ----
+
+fwrite(results_all, "tableau_synthese_modeles.csv")
+message("Tableau synthétique exporté → tableau_synthese_modeles.csv")
+
+# ---- 13.7 Aperçu console ----
+
+print(results_all)
