@@ -267,54 +267,20 @@ message("Table comparatif article vs nos résultats → comparatif_article_vs_no
 
 # ---- 12) Régression dynamique Arellano-Bond ----
 
-vars_model <- c("l_Ep","GGEpc","GDPpc","GASp","RESe","Lib","Reg10")
-
-panel_gmm <- na.omit(panel[, c("geo","time", vars_model), with=FALSE])
-
+vars_model <- c("l_Ep","GGEpc","GDPpc","GASp","RESe")
+panel_gmm <- na.omit(panel[, c("geo","time", vars_model), with = FALSE])
 pdata <- pdata.frame(panel_gmm, index = c("geo","time"))
 
-# Modèle Arellano-Bond (GMM)
-mod_ab <- pgmm(
-  l_Ep ~ lag(l_Ep, 1) + GGEpc + GDPpc + GASp + RESe + Lib + Reg10 |
-    lag(l_Ep, 2:3),      # instruments GMM
+mod_ab_min <- pgmm(
+  l_Ep ~ lag(l_Ep, 1) + GGEpc + GDPpc + GASp + RESe |
+    lag(l_Ep, 2),     # UN seul lag-instrument
   data = pdata,
-  effect = "twoways",
-  model = "twosteps",
+  effect = "individual",
+  model = "onestep",
   transformation = "d"
 )
-summary(mod_ab)
 
-# Tests AR(1) et AR(2)
-mtest(mod_ab, order = 1)
-mtest(mod_ab, order = 2)
-
-# Test Hansen des sur-identifications
-sargan(mod_ab)
-
-# --- Vérifications des datasets et des dates pour expliquer la perte de données dans le panel : 
-
-# 1) Période effective dans le panel final
-print(range(panel$time, na.rm=TRUE))
-table(panel$time)          # distribution par année
-
-# 2) Pour chaque variable, min time disponible (par pays)
-vars <- c("Ep","GGEpc","GDPpc","RESe")
-for(v in vars){
-  tmp <- panel[!is.na(get(v)), .(min_time = min(time, na.rm=TRUE)), by = geo]
-  message("Variable: ", v, " ; pays avec min_time > 2000 :")
-  print(tmp[min_time > 2000])
-}
-
-# 3) Pour Ep spécifiquement, inspecte disponibilité brute
-ep_all <- get_eurostat("nrg_pc_204", time_format="num") %>% as.data.table()
-fix_time_column(ep_all)
-ep_all[, .(min_time = min(time, na.rm=TRUE)), by = geo][order(min_time)]
-unique(ep_all$time) # toutes les années présentes dans la table brute
-
-ep_all <- get_eurostat("nrg_pc_204", time_format="num") %>% as.data.table()
-fix_time_column(ep_all)
-# inspect combinations par pays
-ep_all[, .(min_time = min(time, na.rm=TRUE)), by = .(geo, currency, product, unit)][order(geo, min_time)] |> head(100)
-# quels pays ont des observations avant 2007 (quel que soit currency/product)?
-ep_all[, .(min_time = min(time, na.rm=TRUE)), by = geo][order(min_time)]
-
+summary(mod_ab_min)
+mtest(mod_ab_min, 1)
+mtest(mod_ab_min, 2)
+sargan(mod_ab_min)
