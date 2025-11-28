@@ -10,6 +10,7 @@ for(p in pkgs) if(!requireNamespace(p, quietly = TRUE)) install.packages(p)
 library(data.table); library(eurostat); library(readxl); library(arrow); library(plm)
 library(lmtest)
 library(sandwich)
+library(ggplot2)
 library(dplyr)
 # ---- 1) Paramètres ----
 year_min <- 2000L
@@ -116,7 +117,6 @@ if (nrow(ep_sub[, .N, by = .(geo, time)][N > 1]) > 0) {
   message("Ep filtré et agrégé : ", nrow(ep_sub), " lignes, sans doublons.")
 }
 
-
 # ---- 6) GDPpc : sdg_08_10 (PIB réel per capita - option A) ----
 # sdg_08_10 usually contains GDP per capita in PPS or similar; detect unit and choose reasonable one
 gdp_id <- "sdg_08_10"
@@ -185,6 +185,7 @@ if(file.exists("lib_reg10.csv")){
   message("lib_reg10.csv absent : Lib et Reg10 seront créés comme NA (tu peux fournir le CSV).")
   libtab <- NULL
 }
+
 
 # ---- 9) Construire panel final (data.table joins) ----
 # Start from ep_sub (one row per country-year expected)
@@ -288,82 +289,20 @@ mtest(mod_ab_min, 2)
 sargan(mod_ab_min)
 
 # ---- 13) Synthèse des modèles : OLS, FE, AB-GMM ----
-
-pdata_full <- pdata.frame(panel, index=c("geo","time"))
-
-mod_pool <- plm(
-  l_Ep ~ lag(l_Ep,1) + GGEpc + GDPpc + GASp + RESe + Lib + Reg10, 
-  data = pdata_full,
-  model = "pooling")
-
-coeftest(mod_pool, vcov = vcovHC(mod_pool, type="HC1", cluster="group"))
-
-  mod_fe <- plm(
-  l_Ep ~ lag(l_Ep,1) + GGEpc + GDPpc + GASp + RESe + Lib + Reg10,
-  data = pdata_full,
-  model = "within",
-  effect = "twoways"
-)
-
-coeftest(mod_fe, vcov = vcovHC(mod_fe, type="HC1", cluster="group"))
+# 14 Quelques figures pour illusttrer la présentation : 
 
 
-extract_results <- function(model, model_name, robust_vcov = NULL) {
-  
-  if(!is.null(robust_vcov)){
-    ct <- coeftest(model, vcov = robust_vcov)
-  } else {
-    ct <- summary(model)$coefficients
-  }
-  
-  data.frame(
-    model = model_name,
-    variable = rownames(ct),
-    estimate = ct[,1],
-    std_error = ct[,2],
-    t_value = ct[,3],
-    p_value = ct[,4]
-  )
-}
 
-# ---- 13.2 Résultats Pooled OLS ----
+vars <- panel[, .(l_Ep, GGEpc, GDPpc, GASp, RESe)]
+corr <- cor(vars, use="pairwise.complete.obs")
+corrplot::corrplot(corr, method="color")
 
-res_pool <- extract_results(
-  mod_pool,
-  model_name = "Pooled OLS",
-  robust_vcov = vcovHC(mod_pool, type = "HC1", cluster = "group")
-)
+# 15 Debuggage: Essayons de comprendre pour quoi le score de l'AB-GMM est
+# si faible : 
 
-# ---- 13.3 Résultats FE (Two-Ways Fixed Effects) ----
+ggplot(panel, aes(x = lag(Ep), y = Ep)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method="lm") +
+  labs(title="Autocorrélation du prix de l'électricité (Ep vs Ep laggé)",
+       x="Ep_{t-1}", y="Ep_t")
 
-res_fe <- extract_results(
-  mod_fe,
-  model_name = "Two-Ways FE",
-  robust_vcov = vcovHC(mod_fe, type = "HC1", cluster = "group")
-)
-
-# ---- 13.4 Résultats Arellano–Bond GMM minimal ----
-
-summary_ab <- summary(mod_ab_min)
-
-res_ab <- data.frame(
-  model = "AB-GMM (1-step)",
-  variable = rownames(summary_ab$coefficients),
-  estimate = summary_ab$coefficients[,1],
-  std_error = summary_ab$coefficients[,2],
-  t_value = summary_ab$coefficients[,3],
-  p_value = summary_ab$coefficients[,4]
-)
-
-# ---- 13.5 Fusion des résultats ----
-
-results_all <- bind_rows(res_pool, res_fe, res_ab)
-
-# ---- 13.6 Exportation CSV ----
-
-fwrite(results_all, "tableau_synthese_modeles.csv")
-message("Tableau synthétique exporté → tableau_synthese_modeles.csv")
-
-# ---- 13.7 Aperçu console ----
-
-print(results_all)
